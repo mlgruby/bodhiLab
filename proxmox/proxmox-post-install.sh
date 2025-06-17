@@ -77,6 +77,7 @@ backup_configs() {
     files_to_backup=(
         "/etc/apt/sources.list"
         "/etc/apt/sources.list.d/pve-enterprise.list"
+        "/etc/apt/sources.list.d/ceph.list"
         "/etc/hosts"
         "/etc/network/interfaces"
     )
@@ -95,28 +96,68 @@ backup_configs() {
 configure_repositories() {
     print_header "CONFIGURING PACKAGE REPOSITORIES"
     
-    # Disable enterprise repository (comment out)
-    print_info "Disabling enterprise repository..."
+    # Disable enterprise repositories (comment out)
+    print_info "Disabling enterprise repositories..."
+    
+    # Disable Proxmox VE enterprise repository
     if [[ -f "/etc/apt/sources.list.d/pve-enterprise.list" ]]; then
         sed -i 's/^deb/#deb/' /etc/apt/sources.list.d/pve-enterprise.list
-        print_success "Enterprise repository disabled"
+        print_success "Proxmox VE enterprise repository disabled"
+    fi
+    
+    # Disable Ceph enterprise repository
+    if [[ -f "/etc/apt/sources.list.d/ceph.list" ]]; then
+        sed -i 's/^deb/#deb/' /etc/apt/sources.list.d/ceph.list
+        print_success "Ceph enterprise repository disabled"
+    fi
+    
+    # Detect Debian version more reliably
+    print_info "Detecting Debian version..."
+    DEBIAN_VERSION=""
+    
+    # Try multiple methods to detect Debian version
+    if command -v lsb_release >/dev/null 2>&1; then
+        DEBIAN_VERSION=$(lsb_release -cs)
+        print_info "Detected Debian version using lsb_release: $DEBIAN_VERSION"
+    elif [[ -f /etc/os-release ]]; then
+        DEBIAN_VERSION=$(grep VERSION_CODENAME /etc/os-release | cut -d'=' -f2)
+        print_info "Detected Debian version from os-release: $DEBIAN_VERSION"
+    elif [[ -f /etc/debian_version ]]; then
+        # Map version numbers to codenames for common versions
+        VERSION_NUM=$(cat /etc/debian_version)
+        case $VERSION_NUM in
+            12*) DEBIAN_VERSION="bookworm" ;;
+            11*) DEBIAN_VERSION="bullseye" ;;
+            10*) DEBIAN_VERSION="buster" ;;
+            *) DEBIAN_VERSION="bookworm" ;; # Default to latest
+        esac
+        print_info "Detected Debian version from debian_version file: $DEBIAN_VERSION"
+    else
+        # Fallback based on Proxmox version
+        PVE_MAJOR=$(echo $PVE_VERSION | cut -d'.' -f1)
+        case $PVE_MAJOR in
+            8) DEBIAN_VERSION="bookworm" ;;
+            7) DEBIAN_VERSION="bullseye" ;;
+            6) DEBIAN_VERSION="buster" ;;
+            *) DEBIAN_VERSION="bookworm" ;;
+        esac
+        print_warning "Could not detect Debian version, using fallback: $DEBIAN_VERSION"
     fi
     
     # Add no-subscription repository
     print_info "Adding no-subscription repository..."
     if ! grep -q "pve-no-subscription" /etc/apt/sources.list; then
-        echo "deb http://download.proxmox.com/debian/pve $(lsb_release -cs) pve-no-subscription" >> /etc/apt/sources.list
-        print_success "No-subscription repository added"
+        echo "deb http://download.proxmox.com/debian/pve $DEBIAN_VERSION pve-no-subscription" >> /etc/apt/sources.list
+        print_success "No-subscription repository added for $DEBIAN_VERSION"
     else
         print_warning "No-subscription repository already exists"
     fi
     
     # Add Debian security updates
     print_info "Ensuring Debian security repository is present..."
-    DEBIAN_VERSION=$(lsb_release -cs)
     if ! grep -q "security.debian.org" /etc/apt/sources.list; then
         echo "deb http://security.debian.org/debian-security $DEBIAN_VERSION-security main contrib" >> /etc/apt/sources.list
-        print_success "Debian security repository added"
+        print_success "Debian security repository added for $DEBIAN_VERSION"
     fi
     
     # Add non-free-firmware for newer Debian versions
