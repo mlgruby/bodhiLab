@@ -394,24 +394,146 @@ configure_timezone() {
 configure_cpu_governor() {
     print_header "CONFIGURING CPU SCALING"
     
+    # Check if CPU frequency scaling is available
+    if [[ ! -d "/sys/devices/system/cpu/cpu0/cpufreq" ]]; then
+        print_warning "CPU frequency scaling not available on this system"
+        return
+    fi
+    
     current_governor=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "N/A")
     print_info "Current CPU governor: $current_governor"
     
-    read -p "Set CPU governor to 'performance' for better VM performance? (y/N): " -n 1 -r
+    # Get available governors
+    available_governors=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors 2>/dev/null || echo "")
+    if [[ -z "$available_governors" ]]; then
+        print_warning "No CPU governors available on this system"
+        return
+    fi
+    
+    print_info "Available CPU governors: $available_governors"
+    
+    read -p "Configure CPU governor? (y/N): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
+        # Install cpufrequtils for persistent configuration
+        print_info "Installing CPU frequency utilities..."
         apt install -y cpufrequtils
         
-        # Set governor to performance
-        echo 'GOVERNOR="performance"' > /etc/default/cpufrequtils
+        echo ""
+        print_info "CPU Governor Options:"
+        echo ""
         
-        # Apply immediately
-        for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-            echo performance > "$cpu" 2>/dev/null || true
+        # Create array of available governors
+        IFS=' ' read -ra GOVERNORS <<< "$available_governors"
+        
+        # Display governors with descriptions
+        for i in "${!GOVERNORS[@]}"; do
+            governor="${GOVERNORS[$i]}"
+            case $governor in
+                "performance")
+                    echo "  $((i+1)). performance - Always run at maximum frequency (best for servers/VMs)"
+                    ;;
+                "powersave")
+                    echo "  $((i+1)). powersave - Always run at minimum frequency (maximum power saving)"
+                    ;;
+                "ondemand")
+                    echo "  $((i+1)). ondemand - Scale frequency based on load (default, balanced)"
+                    ;;
+                "conservative")
+                    echo "  $((i+1)). conservative - Scale frequency gradually (smoother than ondemand)"
+                    ;;
+                "schedutil")
+                    echo "  $((i+1)). schedutil - Modern scheduler-based scaling (kernel 4.7+)"
+                    ;;
+                "userspace")
+                    echo "  $((i+1)). userspace - Manual frequency control by user programs"
+                    ;;
+                *)
+                    echo "  $((i+1)). $governor - Available governor"
+                    ;;
+            esac
         done
         
-        systemctl enable cpufrequtils
-        print_success "CPU governor set to performance"
+        echo ""
+        print_info "Governor Recommendations:"
+        echo "  • Servers/Production: performance (consistent performance)"
+        echo "  • Home Labs: performance or ondemand (good balance)"
+        echo "  • Laptops: ondemand or powersave (battery life)"
+        echo "  • Modern Systems: schedutil (intelligent scaling)"
+        echo ""
+        
+        # Get user choice
+        while true; do
+            read -p "Select governor (1-${#GOVERNORS[@]}) or 'c' to cancel: " choice
+            
+            if [[ "$choice" == "c" || "$choice" == "C" ]]; then
+                print_info "CPU governor configuration cancelled"
+                return
+            fi
+            
+            if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le "${#GOVERNORS[@]}" ]]; then
+                selected_governor="${GOVERNORS[$((choice-1))]}"
+                break
+            else
+                print_error "Invalid selection. Please choose 1-${#GOVERNORS[@]} or 'c' to cancel"
+            fi
+        done
+        
+        print_info "Selected governor: $selected_governor"
+        
+        # Show current frequencies before change
+        print_info "Current CPU frequencies:"
+        if command -v cpufreq-info >/dev/null 2>&1; then
+            cpufreq-info -f 2>/dev/null | head -4 || echo "CPU frequency info not available"
+        else
+            grep "cpu MHz" /proc/cpuinfo 2>/dev/null | head -4 || echo "CPU frequency info not available"
+        fi
+        
+        # Configure the governor
+        print_info "Configuring CPU governor to: $selected_governor"
+        
+        # Set persistent configuration
+        echo "GOVERNOR=\"$selected_governor\"" > /etc/default/cpufrequtils
+        
+        # Apply immediately to all CPUs
+        for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+            if [[ -w "$cpu" ]]; then
+                echo "$selected_governor" > "$cpu" 2>/dev/null || true
+            fi
+        done
+        
+        # Enable and start the service
+        systemctl enable cpufrequtils 2>/dev/null || true
+        systemctl restart cpufrequtils 2>/dev/null || true
+        
+        # Verify the change
+        sleep 2
+        new_governor=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "unknown")
+        
+        if [[ "$new_governor" == "$selected_governor" ]]; then
+            print_success "CPU governor successfully set to: $selected_governor"
+            
+            # Show new frequencies
+            print_info "New CPU frequencies:"
+            if command -v cpufreq-info >/dev/null 2>&1; then
+                cpufreq-info -f 2>/dev/null | head -4 || echo "CPU frequency info not available"
+            else
+                grep "cpu MHz" /proc/cpuinfo 2>/dev/null | head -4 || echo "CPU frequency info not available"
+            fi
+            
+            # Show additional info for performance governor
+            if [[ "$selected_governor" == "performance" ]]; then
+                print_info "Performance governor benefits:"
+                echo "  • Consistent VM performance"
+                echo "  • No frequency scaling delays"
+                echo "  • Maximum computational power"
+                echo "  • Higher power consumption"
+            fi
+            
+        else
+            print_error "Failed to set CPU governor. Current: $new_governor, Expected: $selected_governor"
+        fi
+        
     else
         print_info "CPU governor configuration skipped"
     fi
