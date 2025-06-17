@@ -274,23 +274,45 @@ configure_firewall() {
     read -p "Configure basic firewall rules? (y/N): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        # Enable firewall
-        ufw --force enable
+        # Install UFW if not present
+        print_info "Installing UFW firewall..."
+        apt install -y ufw
         
-        # Allow SSH
+        # Reset UFW to defaults (clean slate)
+        ufw --force reset
+        
+        # Set default policies
+        ufw default deny incoming
+        ufw default allow outgoing
+        
+        # Allow SSH (critical - don't lock yourself out!)
         ufw allow 22/tcp
+        print_success "SSH access allowed (port 22)"
         
         # Allow Proxmox web interface
         ufw allow 8006/tcp
+        print_success "Proxmox web interface allowed (port 8006)"
         
-        # Allow VNC connections for VMs
+        # Allow VNC connections for VM consoles
         ufw allow 5900:5999/tcp
+        print_success "VNC console access allowed (ports 5900-5999)"
         
-        # Allow SPICE connections
+        # Allow SPICE connections for VM consoles
         ufw allow 3128/tcp
+        print_success "SPICE console access allowed (port 3128)"
         
-        print_success "Basic firewall rules configured"
-        ufw status
+        # Enable firewall
+        ufw --force enable
+        
+        print_success "Firewall enabled and configured"
+        print_info "Current firewall status:"
+        ufw status numbered
+        
+        print_warning "Important firewall notes:"
+        print_warning "- SSH (port 22) is allowed from anywhere"
+        print_warning "- Proxmox web (port 8006) is allowed from anywhere"
+        print_warning "- Consider restricting access to specific IP ranges later"
+        
     else
         print_info "Firewall configuration skipped"
     fi
