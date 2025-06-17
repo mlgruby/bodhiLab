@@ -49,9 +49,23 @@ print_info() {
 configure_email() {
     print_header "CONFIGURING EMAIL NOTIFICATIONS"
     
+    # Check if postfix is already installed and configured
+    if systemctl is-active --quiet postfix 2>/dev/null; then
+        print_success "Postfix already installed and running - skipping email configuration"
+        print_info "Current postfix status:"
+        systemctl status postfix --no-pager -l 2>/dev/null || echo "Status not available"
+        return
+    fi
+    
     read -p "Configure email notifications? (y/N): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
+        print_info "Installing postfix and mailutils..."
+        
+        # Pre-configure postfix to avoid interactive prompts
+        echo "postfix postfix/main_mailer_type select Internet Site" | debconf-set-selections
+        echo "postfix postfix/mailname string $(hostname -f)" | debconf-set-selections
+        
         apt install -y postfix mailutils
         
         echo "Postfix configuration:"
@@ -64,12 +78,14 @@ configure_email() {
         case $config_type in
             1)
                 postconf -e "relayhost = "
+                print_success "Configured for direct email sending"
                 ;;
             2)
                 read -p "Enter SMTP relay server (e.g., smtp.gmail.com:587): " relay_host
                 postconf -e "relayhost = [$relay_host]"
                 
                 # Configure SASL authentication
+                print_info "Installing SASL authentication support..."
                 apt install -y libsasl2-modules
                 read -p "Enter SMTP username: " smtp_user
                 read -s -p "Enter SMTP password: " smtp_pass
@@ -83,10 +99,12 @@ configure_email() {
                 postconf -e "smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd"
                 postconf -e "smtp_sasl_security_options = noanonymous"
                 postconf -e "smtp_tls_security_level = encrypt"
+                print_success "Configured for smarthost relay"
                 ;;
             3)
                 read -p "Enter satellite server: " satellite_server
                 postconf -e "relayhost = [$satellite_server]"
+                print_success "Configured for satellite system"
                 ;;
         esac
         
@@ -94,9 +112,9 @@ configure_email() {
         systemctl enable postfix
         
         # Test email
-        read -p "Enter email address to test: " test_email
+        read -p "Enter email address to test (or press Enter to skip): " test_email
         if [[ -n "$test_email" ]]; then
-            echo "Test email from Proxmox $(hostname)" | mail -s "Proxmox Test Email" "$test_email"
+            echo "Test email from Proxmox $(hostname) - $(date)" | mail -s "Proxmox Test Email" "$test_email"
             print_success "Test email sent to $test_email"
         fi
         
@@ -142,35 +160,94 @@ configure_storage() {
 }
 
 configure_lvm_storage() {
+    print_info "Configuring LVM storage..."
     read -p "Enter disk device (e.g., /dev/sdb): " disk_device
     read -p "Enter volume group name: " vg_name
     
-    if [[ -b "$disk_device" ]]; then
-        pvcreate "$disk_device"
-        vgcreate "$vg_name" "$disk_device"
-        
-        # Add to Proxmox storage
-        pvesm add lvm "$vg_name" --vgname "$vg_name" --content images,rootdir
-        
+    # Validate disk device exists
+    if [[ ! -b "$disk_device" ]]; then
+        print_error "Device $disk_device not found or not a block device"
+        return 1
+    fi
+    
+    # Check if volume group already exists
+    if vgdisplay "$vg_name" >/dev/null 2>&1; then
+        print_warning "Volume group '$vg_name' already exists"
+        read -p "Continue anyway? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            return 1
+        fi
+    fi
+    
+    # Check if device is already in use
+    if pvdisplay "$disk_device" >/dev/null 2>&1; then
+        print_warning "Device $disk_device is already a physical volume"
+        read -p "Continue anyway? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            return 1
+        fi
+    else
+        print_info "Creating physical volume on $disk_device..."
+        pvcreate "$disk_device" || {
+            print_error "Failed to create physical volume"
+            return 1
+        }
+    fi
+    
+    if ! vgdisplay "$vg_name" >/dev/null 2>&1; then
+        print_info "Creating volume group $vg_name..."
+        vgcreate "$vg_name" "$disk_device" || {
+            print_error "Failed to create volume group"
+            return 1
+        }
+    fi
+    
+    # Add to Proxmox storage
+    print_info "Adding to Proxmox storage configuration..."
+    if pvesm add lvm "$vg_name" --vgname "$vg_name" --content images,rootdir 2>/dev/null; then
         print_success "LVM storage '$vg_name' configured"
     else
-        print_error "Device $disk_device not found"
+        print_warning "LVM created but failed to add to Proxmox (may already exist)"
     fi
 }
 
 configure_zfs_storage() {
+    print_info "Configuring ZFS storage..."
     read -p "Enter disk device (e.g., /dev/sdb): " disk_device
     read -p "Enter ZFS pool name: " pool_name
     
-    if [[ -b "$disk_device" ]]; then
-        zpool create "$pool_name" "$disk_device"
-        
-        # Add to Proxmox storage
-        pvesm add zfspool "$pool_name" --pool "$pool_name" --content images,rootdir
-        
+    # Validate disk device exists
+    if [[ ! -b "$disk_device" ]]; then
+        print_error "Device $disk_device not found or not a block device"
+        return 1
+    fi
+    
+    # Check if ZFS pool already exists
+    if zpool list "$pool_name" >/dev/null 2>&1; then
+        print_warning "ZFS pool '$pool_name' already exists"
+        read -p "Continue anyway? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            return 1
+        fi
+    else
+        print_info "Creating ZFS pool $pool_name on $disk_device..."
+        if zpool create "$pool_name" "$disk_device"; then
+            print_success "ZFS pool '$pool_name' created"
+        else
+            print_error "Failed to create ZFS pool"
+            return 1
+        fi
+    fi
+    
+    # Add to Proxmox storage
+    print_info "Adding to Proxmox storage configuration..."
+    if pvesm add zfspool "$pool_name" --pool "$pool_name" --content images,rootdir 2>/dev/null; then
         print_success "ZFS storage '$pool_name' configured"
     else
-        print_error "Device $disk_device not found"
+        print_warning "ZFS pool created but failed to add to Proxmox (may already exist)"
     fi
 }
 
@@ -246,20 +323,44 @@ configure_backup() {
 }
 
 configure_nfs_backup() {
+    print_info "Configuring NFS backup storage..."
     read -p "Enter NFS server: " nfs_server
     read -p "Enter NFS export path: " nfs_path
     read -p "Enter storage ID: " storage_id
     
-    # Install NFS client
-    apt install -y nfs-common
+    # Install NFS client if not present
+    if ! command -v mount.nfs >/dev/null 2>&1; then
+        print_info "Installing NFS client..."
+        apt install -y nfs-common
+    else
+        print_info "NFS client already installed"
+    fi
+    
+    # Test NFS connection
+    print_info "Testing NFS connection to $nfs_server:$nfs_path..."
+    if timeout 10 showmount -e "$nfs_server" >/dev/null 2>&1; then
+        print_success "NFS server is accessible"
+    else
+        print_warning "Cannot connect to NFS server or showmount failed"
+        read -p "Continue anyway? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            return 1
+        fi
+    fi
     
     # Add NFS storage
-    pvesm add nfs "$storage_id" --server "$nfs_server" --export "$nfs_path" --content backup
-    
-    print_success "NFS backup storage '$storage_id' configured"
+    print_info "Adding NFS storage to Proxmox..."
+    if pvesm add nfs "$storage_id" --server "$nfs_server" --export "$nfs_path" --content backup 2>/dev/null; then
+        print_success "NFS backup storage '$storage_id' configured"
+    else
+        print_error "Failed to add NFS storage (may already exist or connection failed)"
+        return 1
+    fi
 }
 
 configure_smb_backup() {
+    print_info "Configuring SMB backup storage..."
     read -p "Enter SMB server: " smb_server
     read -p "Enter SMB share: " smb_share
     read -p "Enter SMB username: " smb_user
@@ -267,22 +368,41 @@ configure_smb_backup() {
     echo
     read -p "Enter storage ID: " storage_id
     
-    # Install SMB client
-    apt install -y cifs-utils
+    # Install SMB client if not present
+    if ! command -v mount.cifs >/dev/null 2>&1; then
+        print_info "Installing SMB client..."
+        apt install -y cifs-utils
+    else
+        print_info "SMB client already installed"
+    fi
     
     # Create credentials file
-    cat > "/etc/pve/priv/storage-${storage_id}.pw" << EOF
+    cred_file="/etc/pve/priv/storage-${storage_id}.pw"
+    print_info "Creating credentials file..."
+    cat > "$cred_file" << EOF
 username=$smb_user
 password=$smb_pass
 EOF
-    chmod 600 "/etc/pve/priv/storage-${storage_id}.pw"
+    chmod 600 "$cred_file"
+    
+    # Test SMB connection (optional, as it might require different syntax)
+    print_info "Testing SMB connection..."
+    if timeout 10 smbclient -L "$smb_server" -U "$smb_user%$smb_pass" >/dev/null 2>&1; then
+        print_success "SMB server is accessible"
+    else
+        print_warning "Cannot test SMB connection (server may still work)"
+    fi
     
     # Add SMB storage
-    pvesm add cifs "$storage_id" --server "$smb_server" --share "$smb_share" \
-        --username "$smb_user" --password "/etc/pve/priv/storage-${storage_id}.pw" \
-        --content backup
-    
-    print_success "SMB backup storage '$storage_id' configured"
+    print_info "Adding SMB storage to Proxmox..."
+    if pvesm add cifs "$storage_id" --server "$smb_server" --share "$smb_share" \
+        --username "$smb_user" --password "$cred_file" \
+        --content backup 2>/dev/null; then
+        print_success "SMB backup storage '$storage_id' configured"
+    else
+        print_error "Failed to add SMB storage (may already exist or connection failed)"
+        return 1
+    fi
 }
 
 # Configure SSL certificates
@@ -343,10 +463,26 @@ configure_custom_ssl() {
 configure_monitoring() {
     print_header "CONFIGURING SYSTEM MONITORING"
     
+    # Check if monitoring tools are already installed
+    tools_installed=0
+    monitoring_tools=("iotop" "iftop" "ncdu" "smartmontools" "lm-sensors")
+    
+    for tool in "${monitoring_tools[@]}"; do
+        if command -v "$tool" >/dev/null 2>&1 || dpkg -l | grep -q "^ii.*$tool" 2>/dev/null; then
+            ((tools_installed++))
+        fi
+    done
+    
+    if [[ $tools_installed -eq ${#monitoring_tools[@]} ]]; then
+        print_success "All monitoring tools already installed - skipping"
+        return
+    fi
+    
     read -p "Install additional monitoring tools? (y/N): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         # Install monitoring tools
+        print_info "Installing monitoring tools..."
         apt install -y \
             iotop \
             iftop \
@@ -355,14 +491,26 @@ configure_monitoring() {
             lm-sensors
         
         # Configure sensors
-        sensors-detect --auto
+        print_info "Detecting hardware sensors..."
+        sensors-detect --auto >/dev/null 2>&1 || print_warning "Sensor detection completed (some sensors may not be detected)"
         
         # Enable SMART monitoring
-        systemctl enable smartd
-        systemctl start smartd
+        if ! systemctl is-active --quiet smartd 2>/dev/null; then
+            print_info "Enabling SMART monitoring..."
+            systemctl enable smartd
+            systemctl start smartd
+        else
+            print_info "SMART monitoring already active"
+        fi
         
         print_success "Additional monitoring tools installed"
         print_info "Available tools: iotop, iftop, ncdu, sensors, smartctl"
+        
+        # Show quick sensor test
+        if command -v sensors >/dev/null 2>&1; then
+            print_info "Current sensor readings:"
+            sensors 2>/dev/null | head -10 || print_info "No sensors detected or sensors not configured"
+        fi
     else
         print_info "Monitoring tools installation skipped"
     fi
