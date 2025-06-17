@@ -96,19 +96,37 @@ backup_configs() {
 configure_repositories() {
     print_header "CONFIGURING PACKAGE REPOSITORIES"
     
+    # Check if repositories are already configured
+    pve_disabled=$(grep -c "^#deb.*pve-enterprise" /etc/apt/sources.list.d/pve-enterprise.list 2>/dev/null || echo "0")
+    ceph_disabled=$(grep -c "^#deb.*enterprise" /etc/apt/sources.list.d/ceph.list 2>/dev/null || echo "0")
+    no_sub_exists=$(grep -c "pve-no-subscription" /etc/apt/sources.list 2>/dev/null || echo "0")
+    
+    if [[ $pve_disabled -gt 0 && $ceph_disabled -gt 0 && $no_sub_exists -gt 0 ]]; then
+        print_success "Repository configuration already completed - skipping"
+        return
+    fi
+    
     # Disable enterprise repositories (comment out)
     print_info "Disabling enterprise repositories..."
     
     # Disable Proxmox VE enterprise repository
     if [[ -f "/etc/apt/sources.list.d/pve-enterprise.list" ]]; then
-        sed -i 's/^deb/#deb/' /etc/apt/sources.list.d/pve-enterprise.list
-        print_success "Proxmox VE enterprise repository disabled"
+        if [[ $pve_disabled -eq 0 ]]; then
+            sed -i 's/^deb/#deb/' /etc/apt/sources.list.d/pve-enterprise.list
+            print_success "Proxmox VE enterprise repository disabled"
+        else
+            print_success "Proxmox VE enterprise repository already disabled"
+        fi
     fi
     
     # Disable Ceph enterprise repository
     if [[ -f "/etc/apt/sources.list.d/ceph.list" ]]; then
-        sed -i 's/^deb/#deb/' /etc/apt/sources.list.d/ceph.list
-        print_success "Ceph enterprise repository disabled"
+        if [[ $ceph_disabled -eq 0 ]]; then
+            sed -i 's/^deb/#deb/' /etc/apt/sources.list.d/ceph.list
+            print_success "Ceph enterprise repository disabled"
+        else
+            print_success "Ceph enterprise repository already disabled"
+        fi
     fi
     
     # Detect Debian version more reliably
@@ -174,6 +192,20 @@ configure_repositories() {
 update_system() {
     print_header "UPDATING SYSTEM PACKAGES"
     
+    # Check if system was recently updated (within last 24 hours)
+    if [[ -f "/var/lib/apt/periodic/update-success-stamp" ]]; then
+        last_update=$(stat -c %Y /var/lib/apt/periodic/update-success-stamp 2>/dev/null || echo "0")
+        current_time=$(date +%s)
+        time_diff=$((current_time - last_update))
+        
+        if [[ $time_diff -lt 86400 ]]; then  # 24 hours
+            print_success "System updated recently ($(($time_diff / 3600)) hours ago) - skipping update"
+            print_info "Installing additional packages if needed..."
+            apt install -y curl wget vim htop tree unzip software-properties-common apt-transport-https ca-certificates gnupg lsb-release 2>/dev/null || true
+            return
+        fi
+    fi
+    
     print_info "Updating package lists..."
     apt update
     print_success "Package lists updated"
@@ -202,8 +234,22 @@ update_system() {
 remove_subscription_nag() {
     print_header "REMOVING SUBSCRIPTION NAG"
     
-    # Backup original file
-    cp /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js.bak
+    # Check if subscription nag is already removed
+    if grep -q "false" /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js 2>/dev/null; then
+        if grep -q "data.status !== 'Active'" /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js; then
+            # Original check still exists, not fully removed
+            print_info "Partially modified, completing subscription nag removal..."
+        else
+            print_success "Subscription nag already removed - skipping"
+            return
+        fi
+    fi
+    
+    # Backup original file if not already backed up
+    if [[ ! -f "/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js.bak" ]]; then
+        cp /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js.bak
+        print_info "Created backup of original proxmoxlib.js"
+    fi
     
     # Remove the subscription check
     sed -i.backup "s/data.status !== 'Active'/false/g" /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js
@@ -271,12 +317,26 @@ EOF
 configure_firewall() {
     print_header "CONFIGURING FIREWALL"
     
+    # Check if UFW is already configured
+    if command -v ufw >/dev/null 2>&1; then
+        ufw_status=$(ufw status 2>/dev/null | head -1)
+        if [[ "$ufw_status" == *"active"* ]]; then
+            print_success "UFW firewall already configured and active - skipping"
+            ufw status numbered
+            return
+        fi
+    fi
+    
     read -p "Configure basic firewall rules? (y/N): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         # Install UFW if not present
-        print_info "Installing UFW firewall..."
-        apt install -y ufw
+        if ! command -v ufw >/dev/null 2>&1; then
+            print_info "Installing UFW firewall..."
+            apt install -y ufw
+        else
+            print_info "UFW already installed"
+        fi
         
         # Reset UFW to defaults (clean slate)
         ufw --force reset
@@ -322,10 +382,23 @@ configure_firewall() {
 configure_fail2ban() {
     print_header "CONFIGURING FAIL2BAN"
     
+    # Check if fail2ban is already installed and configured
+    if systemctl is-active --quiet fail2ban 2>/dev/null; then
+        print_success "Fail2Ban already installed and running - skipping"
+        print_info "Current Fail2Ban status:"
+        fail2ban-client status 2>/dev/null || echo "Status command not available"
+        return
+    fi
+    
     read -p "Install and configure Fail2Ban for SSH protection? (y/N): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        apt install -y fail2ban
+        if ! command -v fail2ban-client >/dev/null 2>&1; then
+            print_info "Installing Fail2Ban..."
+            apt install -y fail2ban
+        else
+            print_info "Fail2Ban already installed"
+        fi
         
         # Create jail.local configuration
         cat > /etc/fail2ban/jail.local << 'EOF'
@@ -403,11 +476,39 @@ configure_cpu_governor() {
     current_governor=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "N/A")
     print_info "Current CPU governor: $current_governor"
     
+    # Check if cpufrequtils is configured and governor is already set optimally
+    if [[ -f "/etc/default/cpufrequtils" ]]; then
+        configured_governor=$(grep 'GOVERNOR=' /etc/default/cpufrequtils 2>/dev/null | cut -d'"' -f2)
+        if [[ "$configured_governor" == "$current_governor" && "$current_governor" != "N/A" ]]; then
+            print_success "CPU governor already configured to: $current_governor - skipping"
+            return
+        fi
+    fi
+    
     # Get available governors
     available_governors=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors 2>/dev/null || echo "")
+    
+    # Debug: Show what we found
+    print_info "Raw available governors: '$available_governors'"
+    
     if [[ -z "$available_governors" ]]; then
         print_warning "No CPU governors available on this system"
         return
+    fi
+    
+    # Check if we're using intel_pstate driver
+    scaling_driver=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_driver 2>/dev/null || echo "unknown")
+    print_info "CPU scaling driver: $scaling_driver"
+    
+    # For intel_pstate, we need to check differently
+    if [[ "$scaling_driver" == "intel_pstate" ]]; then
+        print_info "Intel P-State driver detected - checking available governors..."
+        # Sometimes intel_pstate shows limited governors in scaling_available_governors
+        # but supports more through driver configuration
+        if [[ -f "/sys/devices/system/cpu/intel_pstate/status" ]]; then
+            pstate_status=$(cat /sys/devices/system/cpu/intel_pstate/status)
+            print_info "Intel P-State status: $pstate_status"
+        fi
     fi
     
     print_info "Available CPU governors: $available_governors"
@@ -416,8 +517,12 @@ configure_cpu_governor() {
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         # Install cpufrequtils for persistent configuration
-        print_info "Installing CPU frequency utilities..."
-        apt install -y cpufrequtils
+        if ! command -v cpufreq-set >/dev/null 2>&1; then
+            print_info "Installing CPU frequency utilities..."
+            apt install -y cpufrequtils
+        else
+            print_info "CPU frequency utilities already installed"
+        fi
         
         echo ""
         print_info "CPU Governor Options:"
