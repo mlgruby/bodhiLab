@@ -732,6 +732,29 @@ configure_advanced_features() {
             print_info "Containers storage already configured in Proxmox"
         fi
         
+        # Add backup storage (as directory mount)
+        if ! pvesm status 2>/dev/null | grep -q "local-nvme-backups"; then
+            # Create mount point
+            mkdir -p /mnt/zfs-backups
+            
+            # Mount ZFS dataset
+            if mount -t zfs local-nvme/backups /mnt/zfs-backups 2>/dev/null; then
+                # Make mount permanent
+                grep -q "local-nvme/backups" /etc/fstab || echo "local-nvme/backups /mnt/zfs-backups zfs defaults 0 0" >> /etc/fstab
+                
+                # Add to Proxmox as directory storage
+                if pvesm add dir local-nvme-backups --path /mnt/zfs-backups --content backup --maxfiles 15 2>/dev/null; then
+                    print_success "Added backups dataset to Proxmox storage"
+                else
+                    print_info "Backups dataset addition to Proxmox skipped (may need manual configuration)"
+                fi
+            else
+                print_info "Failed to mount backup dataset"
+            fi
+        else
+            print_info "Backups storage already configured in Proxmox"
+        fi
+        
         echo ""
         print_success "Specialized datasets configuration complete!"
         print_info "Next steps:"
