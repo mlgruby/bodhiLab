@@ -498,11 +498,6 @@ configure_advanced_features() {
         zfs set recordsize=64K local-nvme/vms
         zfs set compression=lz4 local-nvme/vms
         zfs set atime=off local-nvme/vms
-        if [[ "$IS_N150" == true ]]; then
-            zfs set volblocksize=32K local-nvme/vms
-        else
-            zfs set volblocksize=16K local-nvme/vms
-        fi
         print_success "Optimized VMs dataset for performance"
         
         # Optimize templates dataset
