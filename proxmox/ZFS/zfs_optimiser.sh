@@ -907,11 +907,9 @@ complete_optimization() {
     if [[ "$IS_N150" == true ]]; then
         zfs set recordsize=64K local-nvme
         zfs set compression=zstd-3 local-nvme
-        zfs set volblocksize=32K local-nvme
     else
         zfs set recordsize=32K local-nvme
         zfs set compression=lz4 local-nvme
-        zfs set volblocksize=16K local-nvme
     fi
     zfs set atime=off local-nvme
     print_success "Applied core settings"
@@ -1020,7 +1018,7 @@ show_current_settings() {
     
     echo ""
     print_info "=== Dataset Properties ==="
-    zfs get recordsize,compression,atime,dedup,volblocksize local-nvme
+    zfs get recordsize,compression,atime,dedup local-nvme
     
     echo ""
     print_info "=== Space Usage ==="
