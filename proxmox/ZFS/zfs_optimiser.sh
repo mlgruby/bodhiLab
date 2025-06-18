@@ -699,57 +699,70 @@ configure_advanced_features() {
         echo ""
         print_info "Adding datasets to Proxmox storage..."
         
-        # Add VMs storage
+        # Add VMs storage with better error handling
         if ! pvesm status 2>/dev/null | grep -q "local-nvme-vms"; then
-            if pvesm add zfspool local-nvme-vms --pool local-nvme/vms --content images,rootdir 2>/dev/null; then
+            if pvesm add zfspool local-nvme-vms --pool local-nvme/vms --content images,rootdir --nodes pve1,pve2 2>/dev/null; then
                 print_success "Added VMs dataset to Proxmox storage"
             else
-                print_info "VMs dataset addition to Proxmox skipped (may need manual configuration)"
+                print_info "VMs dataset addition to Proxmox skipped (storage may already exist or need manual configuration)"
             fi
         else
             print_info "VMs storage already configured in Proxmox"
         fi
         
-        # Add templates storage
+        # Add templates storage with better error handling
         if ! pvesm status 2>/dev/null | grep -q "local-nvme-templates"; then
-            if pvesm add zfspool local-nvme-templates --pool local-nvme/templates --content images,rootdir 2>/dev/null; then
+            if pvesm add zfspool local-nvme-templates --pool local-nvme/templates --content images,rootdir --nodes pve1,pve2 2>/dev/null; then
                 print_success "Added templates dataset to Proxmox storage"
             else
-                print_info "Templates dataset addition to Proxmox skipped (may need manual configuration)"
+                print_info "Templates dataset addition to Proxmox skipped (storage may already exist or need manual configuration)"
             fi
         else
             print_info "Templates storage already configured in Proxmox"
         fi
         
-        # Add containers storage
+        # Add containers storage with better error handling
         if ! pvesm status 2>/dev/null | grep -q "local-nvme-containers"; then
-            if pvesm add zfspool local-nvme-containers --pool local-nvme/containers --content rootdir 2>/dev/null; then
+            if pvesm add zfspool local-nvme-containers --pool local-nvme/containers --content rootdir --nodes pve1,pve2 2>/dev/null; then
                 print_success "Added containers dataset to Proxmox storage"
             else
-                print_info "Containers dataset addition to Proxmox skipped (may need manual configuration)"
+                print_info "Containers dataset addition to Proxmox skipped (storage may already exist or need manual configuration)"
             fi
         else
             print_info "Containers storage already configured in Proxmox"
         fi
         
-        # Add backup storage (as directory mount)
+        # Add backup storage (handle existing mount)
         if ! pvesm status 2>/dev/null | grep -q "local-nvme-backups"; then
-            # Create mount point
-            mkdir -p /mnt/zfs-backups
+            print_info "Configuring backup storage..."
             
-            # Mount ZFS dataset
-            if mount -t zfs local-nvme/backups /mnt/zfs-backups 2>/dev/null; then
-                # Make mount permanent
-                grep -q "local-nvme/backups" /etc/fstab || echo "local-nvme/backups /mnt/zfs-backups zfs defaults 0 0" >> /etc/fstab
-                
-                # Add to Proxmox as directory storage
-                if pvesm add dir local-nvme-backups --path /mnt/zfs-backups --content backup --maxfiles 15 2>/dev/null; then
-                    print_success "Added backups dataset to Proxmox storage"
+            # Check if dataset is already mounted
+            MOUNT_POINT=$(zfs get -H -o value mountpoint local-nvme/backups 2>/dev/null || echo "none")
+            
+            if [[ "$MOUNT_POINT" != "none" && "$MOUNT_POINT" != "-" && -d "$MOUNT_POINT" ]]; then
+                # Dataset is already mounted, use existing mount point
+                if pvesm add dir local-nvme-backups --path "$MOUNT_POINT" --content backup --maxfiles 15 --prune-backups keep-daily=7,keep-weekly=4,keep-monthly=3 2>/dev/null; then
+                    print_success "Added backups dataset to Proxmox storage (using existing mount: $MOUNT_POINT)"
                 else
-                    print_info "Backups dataset addition to Proxmox skipped (may need manual configuration)"
+                    print_info "Backups dataset addition to Proxmox skipped (storage may already exist)"
                 fi
             else
-                print_info "Failed to mount backup dataset"
+                # Dataset not mounted or mount point doesn't exist, set up proper mount
+                print_info "Setting up backup dataset mount..."
+                if zfs set mountpoint=/local-nvme/backups local-nvme/backups 2>/dev/null; then
+                    sleep 2  # Give ZFS time to mount
+                    if [[ -d "/local-nvme/backups" ]]; then
+                        if pvesm add dir local-nvme-backups --path /local-nvme/backups --content backup --maxfiles 15 --prune-backups keep-daily=7,keep-weekly=4,keep-monthly=3 2>/dev/null; then
+                            print_success "Added backups dataset to Proxmox storage"
+                        else
+                            print_info "Backups dataset addition to Proxmox skipped (may need manual configuration)"
+                        fi
+                    else
+                        print_warning "Backup mount point not accessible after setting mountpoint"
+                    fi
+                else
+                    print_warning "Failed to set mountpoint for backup dataset"
+                fi
             fi
         else
             print_info "Backups storage already configured in Proxmox"
