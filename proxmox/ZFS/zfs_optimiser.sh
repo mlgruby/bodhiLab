@@ -750,7 +750,735 @@ configure_advanced_features() {
     echo ""
 }
 
-# Keep the rest of the functions unchanged (configure_system_integration, configure_monitoring_maintenance, etc.)
+# Add these missing functions to your script
+
+configure_system_integration() {
+    print_header "SYSTEM INTEGRATION OPTIMIZATION"
+    
+    # I/O Scheduler
+    print_info "Current I/O scheduler: $(cat /sys/block/nvme*/queue/scheduler 2>/dev/null | head -1 | grep -o '\[.*\]' | tr -d '[]' || echo 'Unknown')"
+    echo ""
+    print_info "I/O scheduler optimization for NVMe:"
+    print_choice "1. none - Best for NVMe SSDs (RECOMMENDED)"
+    print_choice "2. mq-deadline - Good for SATA SSDs"
+    print_choice "3. kyber - Low latency option"
+    print_choice "4. Keep current setting"
+    
+    print_recommendation "Choose option 1 (none) for NVMe drives"
+    print_info "NVMe drives handle their own scheduling internally"
+    
+    echo ""
+    read -p "Choose I/O scheduler (1-4): " scheduler_choice
+    
+    case $scheduler_choice in
+        1)
+            cat > /etc/udev/rules.d/60-scheduler.rules << 'EOF'
+# Optimize I/O scheduler for NVMe
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/scheduler}="none"
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/nr_requests}="128"
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{bdi/read_ahead_kb}="128"
+EOF
+            print_success "Configured I/O scheduler for NVMe optimization"
+            ;;
+        2)
+            cat > /etc/udev/rules.d/60-scheduler.rules << 'EOF'
+# Set mq-deadline scheduler for SSDs
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/scheduler}="mq-deadline"
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/nr_requests}="128"
+EOF
+            print_success "Configured mq-deadline I/O scheduler"
+            ;;
+        3)
+            cat > /etc/udev/rules.d/60-scheduler.rules << 'EOF'
+# Set kyber scheduler for low latency
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/scheduler}="kyber"
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/nr_requests}="64"
+EOF
+            print_success "Configured kyber I/O scheduler"
+            ;;
+        4)
+            print_info "Keeping current I/O scheduler"
+            ;;
+        *)
+            print_warning "Invalid choice, keeping current setting"
+            ;;
+    esac
+    
+    echo ""
+    
+    # ZFS kernel parameters
+    print_info "ZFS kernel parameters optimization:"
+    print_choice "1. Apply recommended ZFS kernel optimizations"
+    print_choice "2. Apply aggressive performance optimizations"
+    print_choice "3. Keep current settings"
+    
+    if [[ "$IS_N150" == true ]]; then
+        print_recommendation "Choose option 1 for balanced N150 optimization"
+    else
+        print_recommendation "Choose option 1 for safe optimizations"
+    fi
+    
+    echo ""
+    read -p "Choose kernel optimization (1-3): " kernel_choice
+    
+    case $kernel_choice in
+        1)
+            print_info "Applying recommended ZFS kernel parameters..."
+            
+            # Add basic optimizations to existing config
+            if [[ ! -f /etc/modprobe.d/zfs.conf ]]; then
+                cat > /etc/modprobe.d/zfs.conf << 'EOF'
+# ZFS Basic Optimizations
+options zfs zfs_prefetch_disable=1
+options zfs zfs_txg_timeout=5
+options zfs zfs_dirty_data_sync_percent=20
+EOF
+            else
+                # Add to existing config if not present
+                grep -q "zfs_prefetch_disable" /etc/modprobe.d/zfs.conf || echo "options zfs zfs_prefetch_disable=1" >> /etc/modprobe.d/zfs.conf
+                grep -q "zfs_txg_timeout" /etc/modprobe.d/zfs.conf || echo "options zfs zfs_txg_timeout=5" >> /etc/modprobe.d/zfs.conf
+                grep -q "zfs_dirty_data_sync_percent" /etc/modprobe.d/zfs.conf || echo "options zfs zfs_dirty_data_sync_percent=20" >> /etc/modprobe.d/zfs.conf
+            fi
+            
+            print_success "Applied recommended ZFS kernel parameters"
+            ;;
+        2)
+            print_info "Applying aggressive ZFS kernel parameters..."
+            
+            if [[ ! -f /etc/modprobe.d/zfs.conf ]]; then
+                cat > /etc/modprobe.d/zfs.conf << 'EOF'
+# ZFS Aggressive Optimizations
+options zfs zfs_prefetch_disable=1
+options zfs zfs_txg_timeout=5
+options zfs zfs_dirty_data_sync_percent=20
+options zfs zfs_vdev_async_read_max_active=10
+options zfs zfs_vdev_async_write_max_active=10
+options zfs zfs_vdev_sync_read_max_active=10
+options zfs zfs_vdev_sync_write_max_active=5
+options zfs zfs_dirty_data_max=4294967296
+EOF
+            else
+                # Add aggressive settings
+                grep -q "zfs_vdev_async_read_max_active" /etc/modprobe.d/zfs.conf || echo "options zfs zfs_vdev_async_read_max_active=10" >> /etc/modprobe.d/zfs.conf
+                grep -q "zfs_vdev_async_write_max_active" /etc/modprobe.d/zfs.conf || echo "options zfs zfs_vdev_async_write_max_active=10" >> /etc/modprobe.d/zfs.conf
+                grep -q "zfs_dirty_data_max" /etc/modprobe.d/zfs.conf || echo "options zfs zfs_dirty_data_max=4294967296" >> /etc/modprobe.d/zfs.conf
+            fi
+            
+            print_success "Applied aggressive ZFS kernel parameters"
+            ;;
+        3)
+            print_info "Keeping current kernel parameters"
+            ;;
+        *)
+            print_warning "Invalid choice, keeping current settings"
+            ;;
+    esac
+    
+    echo ""
+    print_success "System integration optimization complete!"
+    echo ""
+}
+
+configure_monitoring_maintenance() {
+    print_header "MONITORING & MAINTENANCE SETUP"
+    
+    print_info "Setting up ZFS monitoring and maintenance automation..."
+    echo ""
+    
+    # Create monitoring script
+    print_info "Creating ZFS health monitoring script..."
+    
+    cat > /usr/local/bin/zfs-health-monitor.sh << 'EOF'
+#!/bin/bash
+
+# ZFS Health Monitor for Intel N150 Systems
+LOG_FILE="/var/log/zfs-health.log"
+ERROR_LOG="/var/log/zfs-errors.log"
+
+# Function to safely execute commands
+safe_execute() {
+    local cmd="$1"
+    local description="$2"
+    
+    if eval "$cmd" 2>/dev/null; then
+        return 0
+    else
+        echo "Warning: Failed to execute $description" >> "$ERROR_LOG"
+        return 1
+    fi
+}
+
+{
+    echo "=== ZFS Health Check - $(date) ==="
+    
+    # System uptime and load
+    echo "System: $(uptime)"
+    
+    # CPU Temperature (multiple sources)
+    TEMP_FOUND=false
+    
+    # Try sensors first
+    if command -v sensors >/dev/null 2>&1; then
+        TEMP=$(sensors 2>/dev/null | grep -E "(Package|Core.*temp)" | head -1 | awk '{print $3}' | sed 's/+//g' | sed 's/°C//g' | cut -d. -f1)
+        if [[ -n "$TEMP" && "$TEMP" != "0" ]]; then
+            echo "CPU Temperature: ${TEMP}°C"
+            if [[ $TEMP -gt 85 ]]; then
+                echo "⚠  CRITICAL: Very high CPU temperature!"
+            elif [[ $TEMP -gt 75 ]]; then
+                echo "⚠  WARNING: High CPU temperature!"
+            elif [[ $TEMP -gt 65 ]]; then
+                echo "⚠  CAUTION: Elevated CPU temperature"
+            else
+                echo "✓ Temperature normal"
+            fi
+            TEMP_FOUND=true
+        fi
+    fi
+    
+    # Try thermal zone if sensors failed
+    if [[ "$TEMP_FOUND" = false ]] && [[ -f "/sys/class/thermal/thermal_zone0/temp" ]]; then
+        TEMP_MILLIC=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
+        if [[ -n "$TEMP_MILLIC" && "$TEMP_MILLIC" != "0" ]]; then
+            TEMP=$((TEMP_MILLIC / 1000))
+            echo "CPU Temperature: ${TEMP}°C (thermal zone)"
+            TEMP_FOUND=true
+        fi
+    fi
+    
+    if [[ "$TEMP_FOUND" = false ]]; then
+        echo "CPU Temperature: Not available"
+    fi
+    
+    echo ""
+    
+    # ZFS Pool Status
+    echo "=== Pool Status ==="
+    if safe_execute "zpool status local-nvme" "pool status"; then
+        zpool status local-nvme
+    else
+        echo "Failed to get pool status"
+    fi
+    
+    echo ""
+    
+    # Pool Performance
+    echo "=== Pool Performance ==="
+    if safe_execute "zpool iostat local-nvme" "pool iostat"; then
+        zpool iostat local-nvme
+    fi
+    
+    echo ""
+    
+    # ARC Statistics with error handling
+    echo "=== ARC Cache Statistics ==="
+    if [[ -f /proc/spl/kstat/zfs/arcstats ]]; then
+        ARC_SIZE=$(awk '/^size/ {printf "%.1fGB", $3/1024/1024/1024}' /proc/spl/kstat/zfs/arcstats 2>/dev/null || echo "Unknown")
+        ARC_HITS=$(awk '/^hits/ {print $3}' /proc/spl/kstat/zfs/arcstats 2>/dev/null || echo 0)
+        ARC_MISSES=$(awk '/^misses/ {print $3}' /proc/spl/kstat/zfs/arcstats 2>/dev/null || echo 0)
+        
+        echo "ARC Size: $ARC_SIZE"
+        if [[ "$ARC_HITS" != "0" && "$ARC_MISSES" != "0" ]]; then
+            ARC_TOTAL=$((ARC_HITS + ARC_MISSES))
+            if [[ $ARC_TOTAL -gt 0 ]]; then
+                ARC_HIT_RATE=$(echo "scale=1; $ARC_HITS * 100 / $ARC_TOTAL" | bc 2>/dev/null || echo "N/A")
+                echo "Hit Rate: ${ARC_HIT_RATE}%"
+                
+                # Performance assessment
+                if command -v bc >/dev/null && [[ "$ARC_HIT_RATE" != "N/A" ]]; then
+                    if (( $(echo "$ARC_HIT_RATE > 95" | bc -l) )); then
+                        echo "✓ Excellent cache performance"
+                    elif (( $(echo "$ARC_HIT_RATE > 85" | bc -l) )); then
+                        echo "✓ Good cache performance"
+                    elif (( $(echo "$ARC_HIT_RATE > 70" | bc -l) )); then
+                        echo "⚠ Moderate cache performance"
+                    else
+                        echo "⚠ Poor cache performance - consider increasing ARC size"
+                    fi
+                fi
+            fi
+        else
+            echo "Hit Rate: No data yet (system just started)"
+        fi
+    else
+        echo "ARC statistics not available"
+    fi
+    
+    echo ""
+    
+    # Compression Stats
+    echo "=== Compression Statistics ==="
+    if safe_execute "zfs get compressratio,compression local-nvme" "compression stats"; then
+        zfs get compressratio,compression local-nvme
+        
+        # Get compression ratio value for assessment
+        COMP_RATIO=$(zfs get -H -o value compressratio local-nvme 2>/dev/null)
+        if [[ -n "$COMP_RATIO" && "$COMP_RATIO" != "1.00x" ]]; then
+            echo "Space savings from compression: $COMP_RATIO"
+        fi
+    fi
+    
+    echo ""
+    
+    # Dataset-specific stats if they exist
+    if zfs list local-nvme/vms &>/dev/null; then
+        echo "=== Dataset Statistics ==="
+        zfs list -o name,used,avail,quota,compressratio local-nvme/vms local-nvme/containers local-nvme/templates local-nvme/backups 2>/dev/null
+        echo ""
+    fi
+    
+    # Dedup stats (if enabled)
+    if zfs get -H -o value dedup local-nvme 2>/dev/null | grep -q "^on"; then
+        echo "=== Deduplication Statistics ==="
+        DEDUP_RATIO=$(zfs get -H -o value dedupratio local-nvme 2>/dev/null || echo "Calculating...")
+        echo "Dedup Ratio: $DEDUP_RATIO"
+        
+        if [[ "$DEDUP_RATIO" != "Calculating..." && "$DEDUP_RATIO" != "1.00x" ]]; then
+            echo "Space savings from deduplication: $DEDUP_RATIO"
+        fi
+        echo ""
+    fi
+    
+    # Disk usage and fragmentation
+    echo "=== Space Usage ==="
+    if safe_execute "zfs list -o name,used,avail,refer,compressratio local-nvme" "space usage"; then
+        zfs list -o name,used,avail,refer,compressratio local-nvme
+    fi
+    
+    echo ""
+    
+    # Fragmentation check
+    echo "=== Pool Fragmentation ==="
+    if safe_execute "zpool list -o name,frag local-nvme" "fragmentation check"; then
+        FRAG=$(zpool list -H -o frag local-nvme 2>/dev/null)
+        echo "Fragmentation: $FRAG"
+        
+        if [[ -n "$FRAG" ]]; then
+            FRAG_NUM=$(echo "$FRAG" | sed 's/%//')
+            if [[ $FRAG_NUM -gt 50 ]]; then
+                echo "⚠ High fragmentation - consider pool maintenance"
+            elif [[ $FRAG_NUM -gt 25 ]]; then
+                echo "⚠ Moderate fragmentation"
+            else
+                echo "✓ Low fragmentation"
+            fi
+        fi
+    fi
+    
+    echo ""
+    
+    # Check for errors
+    echo "=== Error Check ==="
+    if zpool status local-nvme | grep -q "errors: No known data errors"; then
+        echo "✓ No errors detected"
+    else
+        echo "⚠ Errors detected - check pool status immediately"
+        zpool status local-nvme | grep -A 5 "errors:"
+    fi
+    
+    # Memory usage
+    echo ""
+    echo "=== Memory Usage ==="
+    free -h
+    
+    echo "============================================"
+    echo ""
+} >> "$LOG_FILE"
+
+# Rotate log if it gets too large (10MB)
+if [[ -f "$LOG_FILE" ]]; then
+    LOG_SIZE=$(stat -c%s "$LOG_FILE" 2>/dev/null || stat -f%z "$LOG_FILE" 2>/dev/null || echo 0)
+    if [[ $LOG_SIZE -gt 10485760 ]]; then
+        mv "$LOG_FILE" "${LOG_FILE}.old"
+        echo "Log rotated at $(date)" > "$LOG_FILE"
+    fi
+fi
+
+# Also output to console if run manually
+if [[ -t 1 ]]; then
+    echo "Latest health check results:"
+    tail -n 100 "$LOG_FILE" | head -n 80
+fi
+EOF
+    
+    chmod +x /usr/local/bin/zfs-health-monitor.sh
+    print_success "Created enhanced ZFS health monitoring script"
+    
+    # Create maintenance script
+    print_info "Creating ZFS maintenance script..."
+    
+    cat > /usr/local/bin/zfs-maintenance.sh << 'EOF'
+#!/bin/bash
+
+# ZFS Maintenance Script
+echo "Starting ZFS maintenance - $(date)"
+
+# Scrub if not recently done
+LAST_SCRUB=$(zpool history local-nvme | grep scrub | tail -1 | awk '{print $1" "$2}')
+if [ -z "$LAST_SCRUB" ] || [ $(date -d "$LAST_SCRUB" +%s 2>/dev/null || echo 0) -lt $(date -d "30 days ago" +%s) ]; then
+    echo "Starting ZFS scrub..."
+    zpool scrub local-nvme
+    echo "Scrub initiated"
+else
+    echo "Scrub completed recently, skipping"
+fi
+
+# Clean up old snapshots (if any exist)
+OLD_SNAPSHOTS=$(zfs list -t snapshot -o name | grep local-nvme | head -n -10)
+if [ ! -z "$OLD_SNAPSHOTS" ]; then
+    echo "Cleaning up old snapshots..."
+    echo "$OLD_SNAPSHOTS" | while read snapshot; do
+        zfs destroy "$snapshot" 2>/dev/null && echo "Removed: $snapshot"
+    done
+fi
+
+# Check pool health
+zpool status local-nvme | grep -q "ONLINE" && echo "✓ Pool healthy" || echo "⚠ Pool issues detected"
+
+echo "ZFS maintenance completed - $(date)"
+EOF
+    
+    chmod +x /usr/local/bin/zfs-maintenance.sh
+    print_success "Created ZFS maintenance script"
+    
+    # Setup cron jobs
+    echo ""
+    print_choice "Setup automated monitoring and maintenance?"
+    print_choice "1. Yes - Daily monitoring + weekly maintenance (RECOMMENDED)"
+    print_choice "2. Yes - Daily monitoring only"
+    print_choice "3. No - Manual execution only"
+    
+    print_recommendation "Choose option 1 for automated ZFS maintenance"
+    
+    echo ""
+    read -p "Setup automation (1-3): " automation_choice
+    
+    case $automation_choice in
+        1)
+            # Daily monitoring, weekly maintenance
+            (crontab -l 2>/dev/null; echo "0 8 * * * /usr/local/bin/zfs-health-monitor.sh") | crontab -
+            (crontab -l 2>/dev/null; echo "0 2 * * 0 /usr/local/bin/zfs-maintenance.sh") | crontab -
+            print_success "Setup daily monitoring + weekly maintenance"
+            ;;
+        2)
+            # Daily monitoring only
+            (crontab -l 2>/dev/null; echo "0 8 * * * /usr/local/bin/zfs-health-monitor.sh") | crontab -
+            print_success "Setup daily monitoring"
+            ;;
+        3)
+            print_info "Scripts created for manual execution"
+            ;;
+        *)
+            print_warning "Invalid choice, no automation setup"
+            ;;
+    esac
+    
+    echo ""
+    print_success "Monitoring & maintenance setup complete!"
+    echo ""
+    print_info "Manual script execution:"
+    print_info "  Health check: /usr/local/bin/zfs-health-monitor.sh"
+    print_info "  Maintenance:  /usr/local/bin/zfs-maintenance.sh"
+    print_info "  Log file:     /var/log/zfs-health.log"
+    echo ""
+}
+
+complete_optimization() {
+    print_header "COMPLETE ZFS OPTIMIZATION"
+    print_info "This will apply recommended settings for your Intel N150 system"
+    echo ""
+    
+    print_warning "This will modify your ZFS configuration!"
+    print_info "A backup of current settings will be created."
+    echo ""
+    
+    read -p "Proceed with complete optimization? (y/N): " proceed
+    if [[ ! $proceed =~ ^[Yy]$ ]]; then
+        print_info "Optimization cancelled"
+        return
+    fi
+    
+    # Backup current settings
+    print_info "Creating backup of current ZFS settings..."
+    BACKUP_FILE="/root/zfs-settings-backup-$(date +%Y%m%d-%H%M%S).txt"
+    {
+        echo "=== ZFS Settings Backup - $(date) ==="
+        echo "Pool: local-nvme"
+        echo ""
+        zfs get all local-nvme
+        echo ""
+        echo "=== Kernel Modules ==="
+        cat /etc/modprobe.d/zfs.conf 2>/dev/null || echo "No ZFS module config found"
+    } > "$BACKUP_FILE"
+    print_success "Backup saved to: $BACKUP_FILE"
+    
+    # Apply optimizations based on detected hardware
+    print_info "Applying optimizations for your system..."
+    echo ""
+    
+    # Core settings
+    print_info "Configuring core performance settings..."
+    if [[ "$IS_N150" == true ]]; then
+        safe_zfs_set "recordsize" "64K" "local-nvme"
+        safe_zfs_set "compression" "zstd-3" "local-nvme"
+    else
+        safe_zfs_set "recordsize" "32K" "local-nvme"
+        safe_zfs_set "compression" "lz4" "local-nvme"
+    fi
+    safe_zfs_set "atime" "off" "local-nvme"
+    print_success "Applied core settings"
+    
+    # Memory settings
+    print_info "Configuring memory management..."
+    if [[ $TOTAL_RAM_GB -ge 32 ]]; then
+        ARC_MAX="8589934592"  # 8GB
+        ARC_MIN="2147483648"  # 2GB
+    elif [[ $TOTAL_RAM_GB -ge 16 ]]; then
+        ARC_MAX="4294967296"  # 4GB
+        ARC_MIN="1073741824"  # 1GB
+    else
+        ARC_MAX="2147483648"  # 2GB
+        ARC_MIN="536870912"   # 512MB
+    fi
+    
+    cat > /etc/modprobe.d/zfs.conf << EOF
+# ZFS Optimization for Intel N150
+options zfs zfs_arc_max=$ARC_MAX
+options zfs zfs_arc_min=$ARC_MIN
+options zfs zfs_prefetch_disable=1
+options zfs zfs_txg_timeout=5
+options zfs zfs_dirty_data_sync_percent=20
+EOF
+    print_success "Applied memory settings"
+    
+    # System integration
+    print_info "Configuring system integration..."
+    cat > /etc/udev/rules.d/60-scheduler.rules << 'EOF'
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/scheduler}="none"
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/nr_requests}="128"
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{bdi/read_ahead_kb}="128"
+EOF
+    
+    cat >> /etc/sysctl.conf << 'EOF'
+
+# ZFS + VM Optimization
+vm.swappiness=1
+vm.vfs_cache_pressure=50
+vm.dirty_ratio=5
+vm.dirty_background_ratio=3
+EOF
+    sysctl -p > /dev/null 2>&1 || true
+    print_success "Applied system integration"
+    
+    # Enable deduplication for abundant RAM systems
+    if [[ "$HAS_ABUNDANT_RAM" == true ]]; then
+        print_info "Enabling deduplication (recommended for 32GB+ systems)..."
+        safe_zfs_set "dedup" "on" "local-nvme"
+        print_success "Enabled deduplication"
+    fi
+    
+    # Setup monitoring
+    print_info "Setting up monitoring and maintenance..."
+    configure_monitoring_maintenance
+    
+    print_header "COMPLETE OPTIMIZATION SUMMARY"
+    echo ""
+    print_success "ZFS optimization completed successfully!"
+    echo ""
+    print_info "Applied settings:"
+    if [[ "$IS_N150" == true ]]; then
+        print_info "  • Record size: 64K (optimized for Intel N150)"
+        print_info "  • Compression: zstd-3 (N150 can handle efficiently)"
+    else
+        print_info "  • Record size: 32K (balanced for general systems)"
+        print_info "  • Compression: lz4 (reliable and fast)"
+    fi
+    print_info "  • ARC cache: $((ARC_MAX / 1024 / 1024 / 1024))GB max, $((ARC_MIN / 1024 / 1024 / 1024))GB min"
+    print_info "  • Access time: disabled (better performance)"
+    print_info "  • I/O scheduler: none (optimal for NVMe)"
+    print_info "  • Prefetch: disabled (SSD optimization)"
+    if [[ "$HAS_ABUNDANT_RAM" == true ]]; then
+        print_info "  • Deduplication: enabled (space savings)"
+    fi
+    print_info "  • Monitoring: automated health checks"
+    
+    echo ""
+    print_warning "Important next steps:"
+    print_warning "1. Reboot system for all changes to take effect"
+    print_warning "2. Monitor system performance after reboot"
+    print_warning "3. Check ARC hit rates after running VMs"
+    print_warning "4. Settings backup saved: $BACKUP_FILE"
+    
+    echo ""
+    read -p "Reboot now to apply all changes? (y/N): " reboot_now
+    if [[ $reboot_now =~ ^[Yy]$ ]]; then
+        print_info "Rebooting in 10 seconds... (Ctrl+C to cancel)"
+        sleep 10
+        reboot
+    else
+        print_info "Remember to reboot when convenient"
+    fi
+}
+
+show_current_settings() {
+    print_header "CURRENT ZFS SETTINGS"
+    
+    echo ""
+    print_info "=== Pool Information ==="
+    zpool status local-nvme
+    
+    echo ""
+    print_info "=== Dataset Properties ==="
+    if zfs list local-nvme/vms &>/dev/null; then
+        # Show specialized datasets if they exist
+        zfs get recordsize,compression,atime,dedup,quota local-nvme/vms local-nvme/containers local-nvme/templates local-nvme/backups 2>/dev/null
+    else
+        # Show single pool settings
+        zfs get recordsize,compression,atime,dedup local-nvme
+    fi
+    
+    echo ""
+    print_info "=== Space Usage ==="
+    if zfs list local-nvme/vms &>/dev/null; then
+        zfs list -o name,used,avail,refer,compressratio local-nvme/vms local-nvme/containers local-nvme/templates local-nvme/backups
+    else
+        zfs list -o name,used,avail,refer,compressratio local-nvme
+    fi
+    
+    echo ""
+    print_info "=== ARC Statistics ==="
+    if [[ -f /proc/spl/kstat/zfs/arcstats ]]; then
+        ARC_SIZE=$(awk '/^size/ {printf "%.1fGB", $3/1024/1024/1024}' /proc/spl/kstat/zfs/arcstats)
+        ARC_HITS=$(awk '/^hits/ {print $3}' /proc/spl/kstat/zfs/arcstats)
+        ARC_MISSES=$(awk '/^misses/ {print $3}' /proc/spl/kstat/zfs/arcstats)
+        ARC_TOTAL=$((ARC_HITS + ARC_MISSES))
+        
+        echo "ARC Size: $ARC_SIZE"
+        if [[ $ARC_TOTAL -gt 0 ]]; then
+            ARC_HIT_RATE=$(echo "scale=1; $ARC_HITS * 100 / $ARC_TOTAL" | bc 2>/dev/null || echo "N/A")
+            echo "Hit Rate: ${ARC_HIT_RATE}%"
+        else
+            echo "Hit Rate: No data yet"
+        fi
+    else
+        echo "ARC statistics not available"
+    fi
+    
+    echo ""
+    print_info "=== System Configuration ==="
+    echo "I/O Scheduler: $(cat /sys/block/nvme*/queue/scheduler 2>/dev/null | head -1 | grep -o '\[.*\]' | tr -d '[]' || echo 'Unknown')"
+    
+    if [[ -f /etc/modprobe.d/zfs.conf ]]; then
+        echo ""
+        print_info "=== ZFS Module Configuration ==="
+        cat /etc/modprobe.d/zfs.conf
+    fi
+    
+    echo ""
+}
+
+custom_configuration() {
+    print_header "CUSTOM ZFS CONFIGURATION"
+    
+    print_info "Configure individual ZFS properties:"
+    echo ""
+    
+    while true; do
+        print_choice "Available properties to configure:"
+        print_choice "1. Record size"
+        print_choice "2. Compression algorithm"
+        print_choice "3. Volume block size"
+        print_choice "4. Access time (atime)"
+        print_choice "5. Deduplication"
+        print_choice "6. Sync behavior"
+        print_choice "7. ARC cache settings"
+        print_choice "8. Done with custom configuration"
+        
+        echo ""
+        read -p "Choose property to configure (1-8): " custom_choice
+        
+        case $custom_choice in
+            1)
+                echo ""
+                print_info "Current record size: $(zfs get -H -o value recordsize local-nvme)"
+                read -p "Enter new record size (e.g., 16K, 32K, 64K, 128K, 1M): " new_recordsize
+                if [[ -n "$new_recordsize" ]]; then
+                    safe_zfs_set "recordsize" "$new_recordsize" "local-nvme"
+                fi
+                ;;
+            2)
+                echo ""
+                print_info "Current compression: $(zfs get -H -o value compression local-nvme)"
+                print_info "Options: off, lz4, zstd-1, zstd-3, zstd-6, gzip-1, gzip-6"
+                read -p "Enter compression algorithm: " new_compression
+                if [[ -n "$new_compression" ]]; then
+                    safe_zfs_set "compression" "$new_compression" "local-nvme"
+                fi
+                ;;
+            3)
+                echo ""
+                print_info "Current volume block size: $(zfs get -H -o value volblocksize local-nvme 2>/dev/null || echo 'Not set')"
+                read -p "Enter volume block size (e.g., 8K, 16K, 32K, 64K): " new_volblocksize
+                if [[ -n "$new_volblocksize" ]]; then
+                    safe_zfs_set "volblocksize" "$new_volblocksize" "local-nvme"
+                fi
+                ;;
+            4)
+                echo ""
+                print_info "Current atime: $(zfs get -H -o value atime local-nvme)"
+                read -p "Enable access time tracking? (on/off): " new_atime
+                if [[ "$new_atime" == "on" || "$new_atime" == "off" ]]; then
+                    safe_zfs_set "atime" "$new_atime" "local-nvme"
+                fi
+                ;;
+            5)
+                echo ""
+                print_info "Current deduplication: $(zfs get -H -o value dedup local-nvme)"
+                print_warning "Deduplication requires significant RAM"
+                read -p "Enable deduplication? (on/off): " new_dedup
+                if [[ "$new_dedup" == "on" || "$new_dedup" == "off" ]]; then
+                    safe_zfs_set "dedup" "$new_dedup" "local-nvme"
+                fi
+                ;;
+            6)
+                echo ""
+                print_info "Current sync: $(zfs get -H -o value sync local-nvme)"
+                print_info "Options: standard (safe), always (very safe), disabled (fast but risky)"
+                read -p "Enter sync behavior: " new_sync
+                if [[ "$new_sync" == "standard" || "$new_sync" == "always" || "$new_sync" == "disabled" ]]; then
+                    safe_zfs_set "sync" "$new_sync" "local-nvme"
+                fi
+                ;;
+            7)
+                echo ""
+                print_info "Configure ARC cache limits (requires reboot)"
+                read -p "Enter ARC maximum size in GB: " arc_max_gb
+                read -p "Enter ARC minimum size in GB: " arc_min_gb
+                if [[ -n "$arc_max_gb" && -n "$arc_min_gb" ]]; then
+                    ARC_MAX=$((arc_max_gb * 1024 * 1024 * 1024))
+                    ARC_MIN=$((arc_min_gb * 1024 * 1024 * 1024))
+                    
+                    cat > /etc/modprobe.d/zfs.conf << EOF
+options zfs zfs_arc_max=$ARC_MAX
+options zfs zfs_arc_min=$ARC_MIN
+EOF
+                    print_success "Set ARC limits: ${arc_min_gb}GB min, ${arc_max_gb}GB max"
+                    print_warning "Reboot required for ARC changes"
+                fi
+                ;;
+            8)
+                break
+                ;;
+            *)
+                print_warning "Invalid choice"
+                ;;
+        esac
+        echo ""
+    done
+    
+    print_success "Custom configuration complete!"
+    echo ""
+}
+
 # Add the verification function
 verify_dataset_configuration() {
     print_header "DATASET CONFIGURATION VERIFICATION"
