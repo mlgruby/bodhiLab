@@ -480,7 +480,7 @@ configure_advanced_features() {
         print_info "Creating specialized datasets..."
         
         # Create datasets
-        datasets=("vms" "templates" "containers" "backups" "iso")
+        datasets=("vms" "templates" "containers" "backups")
         
         for dataset in "${datasets[@]}"; do
             if ! zfs list local-nvme/$dataset &>/dev/null; then
@@ -528,13 +528,12 @@ configure_advanced_features() {
         # Set quotas
         echo ""
         print_info "Setting recommended quotas..."
-        POOL_SIZE_GB=$(zpool list -H -o size local-nvme | sed 's/G//')
+        POOL_SIZE_GB=$(zpool list -H -o size local-nvme | sed 's/G//')    # ~931GB
         
-        zfs set quota=$((POOL_SIZE_GB * 45 / 100))G local-nvme/vms
-        zfs set quota=$((POOL_SIZE_GB * 15 / 100))G local-nvme/containers
-        zfs set quota=$((POOL_SIZE_GB * 10 / 100))G local-nvme/templates
-        zfs set quota=$((POOL_SIZE_GB * 20 / 100))G local-nvme/backups
-        zfs set quota=$((POOL_SIZE_GB * 5 / 100))G local-nvme/iso
+        zfs set quota=$((POOL_SIZE_GB * 15 / 100))G local-nvme/vms        # 15% = ~140GB
+        zfs set quota=$((POOL_SIZE_GB * 65 / 100))G local-nvme/containers # 65% = ~605GB  
+        zfs set quota=$((POOL_SIZE_GB * 8 / 100))G local-nvme/templates   # 8% = ~74GB
+        zfs set quota=$((POOL_SIZE_GB * 10 / 100))G local-nvme/backups    # 10% = ~93GB
         
         print_success "Set quotas based on pool size"
         
