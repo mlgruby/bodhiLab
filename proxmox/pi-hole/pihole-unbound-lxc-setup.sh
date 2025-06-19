@@ -83,6 +83,29 @@ check_proxmox() {
 get_user_config() {
     print_header "CONFIGURATION SETUP"
     
+    # Quick setup option
+    echo ""
+    print_info "🚀 QUICK SETUP OPTION:"
+    print_info "   • Container ID: 200"
+    print_info "   • Container IP: 192.168.1.100/24" 
+    print_info "   • Gateway: 192.168.1.1"
+    print_info "   • Template: Debian (auto-selected)"
+    print_info "   • Storage: First available option"
+    print_info "   • Memory: 1024MB, Disk: 8GB"
+    echo ""
+    read -p "Use quick setup with defaults above? (Y/n): " quick_setup
+    
+    if [[ "$quick_setup" =~ ^[Nn]$ ]]; then
+        print_info "Proceeding with custom configuration..."
+    else
+        print_success "Using quick setup with defaults!"
+        CONTAINER_IP="192.168.1.100/24"
+        CONTAINER_GATEWAY="192.168.1.1"
+        USE_DEFAULTS="true"
+        return 0
+    fi
+    echo ""
+    
     # Container ID
     read -p "Enter Container ID (default: $CONTAINER_ID): " input_id
     CONTAINER_ID=${input_id:-$CONTAINER_ID}
@@ -94,8 +117,10 @@ get_user_config() {
     fi
     
     # Container IP
+    DEFAULT_IP="192.168.1.100/24"
     while [[ -z "$CONTAINER_IP" ]]; do
-        read -p "Enter Container IP address (e.g., 192.168.1.100/24): " CONTAINER_IP
+        read -p "Enter Container IP address (default: $DEFAULT_IP): " input_ip
+        CONTAINER_IP=${input_ip:-$DEFAULT_IP}
         if [[ ! $CONTAINER_IP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]]; then
             print_error "Invalid IP address format. Please use CIDR notation (e.g., 192.168.1.100/24)"
             CONTAINER_IP=""
@@ -103,8 +128,10 @@ get_user_config() {
     done
     
     # Container Gateway
+    DEFAULT_GATEWAY="192.168.1.1"
     while [[ -z "$CONTAINER_GATEWAY" ]]; do
-        read -p "Enter Gateway IP address (e.g., 192.168.1.1): " CONTAINER_GATEWAY
+        read -p "Enter Gateway IP address (default: $DEFAULT_GATEWAY): " input_gateway
+        CONTAINER_GATEWAY=${input_gateway:-$DEFAULT_GATEWAY}
         if [[ ! $CONTAINER_GATEWAY =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
             print_error "Invalid gateway IP address format"
             CONTAINER_GATEWAY=""
@@ -112,12 +139,21 @@ get_user_config() {
     done
     
     # Storage Selection
-    print_info "Available storage options:"
-    pvesm status | grep -E "(local|nvme|lvm)" | awk '{printf "%d. %s (Type: %s, Status: %s)\n", NR, $1, $2, $4}' | tee /tmp/storage_list.txt
+    if [[ "$USE_DEFAULTS" == "true" ]]; then
+        print_info "Using defaults - auto-selecting first available storage..."
+        pvesm status | grep -E "(local|nvme|lvm)" | awk '{printf "%d. %s (Type: %s, Status: %s)\n", NR, $1, $2, $4}' > /tmp/storage_list.txt
+        CONTAINER_STORAGE=$(head -1 /tmp/storage_list.txt | awk '{print $2}')
+        print_success "Auto-selected storage: $CONTAINER_STORAGE"
+        rm -f /tmp/storage_list.txt
+    else
+        print_info "Available storage options:"
+        pvesm status | grep -E "(local|nvme|lvm)" | awk '{printf "%d. %s (Type: %s, Status: %s)\n", NR, $1, $2, $4}' | tee /tmp/storage_list.txt
     
     echo ""
+    print_info "💡 Tip: Press Enter to select option 1 (first storage option)"
     while [[ -z "$CONTAINER_STORAGE" ]]; do
-        read -p "Select storage number from the list above: " storage_num
+        read -p "Select storage number from the list above (default: 1): " storage_num
+        storage_num=${storage_num:-1}  # Default to option 1
         if [[ "$storage_num" =~ ^[0-9]+$ ]]; then
             CONTAINER_STORAGE=$(sed -n "${storage_num}p" /tmp/storage_list.txt | awk '{print $2}')
             if [[ -n "$CONTAINER_STORAGE" ]]; then
@@ -131,6 +167,7 @@ get_user_config() {
         fi
     done
     rm -f /tmp/storage_list.txt
+    fi
     
     # SSH Key (optional)
     read -p "Enter SSH public key path (optional, press Enter to skip): " ssh_key_path
@@ -162,6 +199,28 @@ get_user_config() {
 select_template() {
     print_header "CONTAINER TEMPLATE SELECTION"
     
+    # Skip if using defaults
+    if [[ "$USE_DEFAULTS" == "true" ]]; then
+        print_info "Using defaults - auto-selecting Debian template..."
+        
+        # Get available templates
+        pveam list local | grep -E "\.(tar\.xz|tar\.zst|tar\.gz)$" | awk '{print NR ". " $1 " (" $3 ")"}' > /tmp/template_list.txt
+        
+        # Try to find Debian template
+        DEBIAN_LINE=$(grep -i "debian" /tmp/template_list.txt | head -1)
+        if [[ -n "$DEBIAN_LINE" ]]; then
+            TEMPLATE=$(echo "$DEBIAN_LINE" | awk '{print $2}' | sed 's/local:vztmpl\///')
+            print_success "Auto-selected template: $TEMPLATE"
+        else
+            # Fallback to first template
+            TEMPLATE=$(head -1 /tmp/template_list.txt | awk '{print $2}' | sed 's/local:vztmpl\///')
+            print_warning "Debian not found, using first available: $TEMPLATE"
+        fi
+        
+        rm -f /tmp/template_list.txt
+        return 0
+    fi
+    
     # Check available templates
     print_info "Available container templates:"
     
@@ -178,11 +237,20 @@ select_template() {
     
     echo ""
     print_info "Recommended: Choose Debian-based template for best Pi-hole compatibility"
+    print_info "💡 Tip: Press Enter to auto-select Debian template (recommended)"
     echo ""
     
     # Template selection
     while [[ -z "$TEMPLATE" ]]; do
-        read -p "Select template number from the list above: " template_num
+        # Try to find Debian template as default
+        DEFAULT_TEMPLATE_NUM=$(grep -n "debian" /tmp/template_list.txt | head -1 | cut -d: -f1)
+        if [[ -z "$DEFAULT_TEMPLATE_NUM" ]]; then
+            DEFAULT_TEMPLATE_NUM=1  # Fallback to first option
+        fi
+        
+        read -p "Select template number from the list above (default: $DEFAULT_TEMPLATE_NUM - Debian recommended): " template_num
+        template_num=${template_num:-$DEFAULT_TEMPLATE_NUM}
+        
         if [[ "$template_num" =~ ^[0-9]+$ ]]; then
             TEMPLATE_FULL=$(sed -n "${template_num}p" /tmp/template_list.txt | awk '{print $2}')
             if [[ -n "$TEMPLATE_FULL" ]]; then

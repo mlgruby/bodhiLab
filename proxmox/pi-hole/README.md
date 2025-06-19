@@ -25,7 +25,9 @@ This directory contains scripts and documentation for setting up Pi-hole with Un
 3. **Or download and run directly:**
 
    ```bash
-   wget -qO- https://raw.githubusercontent.com/mlgruby/bodhiLab/refs/heads/main/proxmox/pi-hole/pihole-unbound-lxc-setup.sh | bash
+   wget https://raw.githubusercontent.com/mlgruby/bodhiLab/refs/heads/main/proxmox/pi-hole/pihole-unbound-lxc-setup.sh
+   chmod +x pihole-unbound-lxc-setup.sh
+   ./pihole-unbound-lxc-setup.sh
    ```
 
 ## What You Get
