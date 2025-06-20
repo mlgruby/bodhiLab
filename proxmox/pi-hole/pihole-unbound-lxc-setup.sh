@@ -267,10 +267,19 @@ select_template() {
     
     # Skip if using defaults
     if [[ "$USE_DEFAULTS" == "true" ]]; then
-        print_info "Using defaults - auto-selecting Debian template..."
+        print_info "Using defaults - auto-selecting template..."
         
         # Get available templates
-        pveam list local | grep -E "\.(tar\.xz|tar\.zst|tar\.gz)$" | awk '{print NR ". " $1 " (" $3 ")"}' > /tmp/template_list.txt
+        pveam list local | grep -v "^NAME" | grep -E "tar\.(xz|zst|gz)" | awk '{print NR ". " $1 " (" $2 ")"}' > /tmp/template_list.txt
+        
+        # Check if any templates are available
+        if [[ ! -s /tmp/template_list.txt ]]; then
+            print_error "No templates available locally. Please download a template first:"
+            print_error "  pveam available | grep debian"
+            print_error "  pveam download local <template-name>"
+            rm -f /tmp/template_list.txt
+            exit 1
+        fi
         
         # Try to find Debian template
         DEBIAN_LINE=$(grep -i "debian" /tmp/template_list.txt | head -1)
@@ -291,14 +300,27 @@ select_template() {
     print_info "Available container templates:"
     
     # Get available templates and format them
-    pveam list local | grep -E "\.(tar\.xz|tar\.zst|tar\.gz)$" | awk '{print NR ". " $1 " (" $3 ")"}' | tee /tmp/template_list.txt
+    print_info "Checking for templates..."
+    pveam list local | grep -v "^NAME" | grep -E "tar\.(xz|zst|gz)" | awk '{print NR ". " $1 " (" $2 ")"}' | tee /tmp/template_list.txt
+    
+    # Debug output
+    echo "Template list contents:"
+    cat /tmp/template_list.txt
     
     # Check if any templates are available
     if [[ ! -s /tmp/template_list.txt ]]; then
-        print_warning "No templates found locally. Downloading recommended template..."
-        print_info "Downloading Debian 12 template (recommended for Pi-hole)..."
-        pveam download local debian-12-standard
-        pveam list local | grep "debian-12-standard" | awk '{print "1. " $1 " (" $3 ")"}' > /tmp/template_list.txt
+        print_warning "No templates found locally."
+        print_info "Available templates for download:"
+        
+        # Show available templates for download
+        pveam available | grep -E "(debian|ubuntu)" | head -5
+        
+        print_error "Please download a template first using:"
+        print_error "  pveam available | grep debian"
+        print_error "  pveam download local <template-name>"
+        print_error ""
+        print_error "Example: pveam download local debian-12-standard_12.7-1_amd64.tar.zst"
+        exit 1
     fi
     
     echo ""
