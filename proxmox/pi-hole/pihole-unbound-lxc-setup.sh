@@ -34,6 +34,7 @@ CONTAINER_IP=""
 CONTAINER_GATEWAY=""
 CONTAINER_BRIDGE="vmbr0"
 CONTAINER_STORAGE=""
+TARGET_NODE=""
 
 # Logging
 LOG_FILE="/var/log/pihole-lxc-setup.log"
@@ -60,6 +61,29 @@ print_error() {
 
 print_info() {
     echo -e "${BLUE}ℹ $1${NC}"
+}
+
+# Helper function to execute commands in container on correct node
+pct_exec() {
+    if [[ "$TARGET_NODE" == "$(hostname)" ]]; then
+        pct exec $CONTAINER_ID -- "$@"
+    else
+        ssh root@$TARGET_NODE "pct exec $CONTAINER_ID -- $*"
+    fi
+}
+
+# Helper function to push files to container on correct node
+pct_push() {
+    local source_file="$1"
+    local dest_file="$2"
+    
+    if [[ "$TARGET_NODE" == "$(hostname)" ]]; then
+        pct push $CONTAINER_ID "$source_file" "$dest_file"
+    else
+        # Copy file to remote node first, then push to container
+        scp "$source_file" "root@$TARGET_NODE:/tmp/$(basename $source_file)"
+        ssh root@$TARGET_NODE "pct push $CONTAINER_ID /tmp/$(basename $source_file) $dest_file && rm /tmp/$(basename $source_file)"
+    fi
 }
 
 # Check if running as root
@@ -89,6 +113,7 @@ get_user_config() {
     print_info "   • Container ID: 200"
     print_info "   • Container IP: 192.168.1.100/24" 
     print_info "   • Gateway: 192.168.1.1"
+    print_info "   • Node: Current node (auto-detected)"
     print_info "   • Template: Debian (auto-selected)"
     print_info "   • Storage: First available option"
     print_info "   • Memory: 1024MB, Disk: 8GB"
@@ -101,6 +126,7 @@ get_user_config() {
         print_success "Using quick setup with defaults!"
         CONTAINER_IP="192.168.1.100/24"
         CONTAINER_GATEWAY="192.168.1.1"
+        TARGET_NODE=$(hostname)  # Use current node
         USE_DEFAULTS="true"
         return 0
     fi
@@ -115,6 +141,45 @@ get_user_config() {
         print_error "Container ID $CONTAINER_ID already exists"
         exit 1
     fi
+    
+    # Node Selection
+    print_info "Available Proxmox nodes in cluster:"
+    pvecm nodes 2>/dev/null | grep -E "^[[:space:]]*[0-9]+" | awk '{printf "%d. %s (Status: %s)\n", NR, $2, $3}' | tee /tmp/node_list.txt
+    
+    # Check if we have multiple nodes
+    node_count=$(wc -l < /tmp/node_list.txt)
+    current_node=$(hostname)
+    
+    if [[ $node_count -gt 1 ]]; then
+        echo ""
+        print_info "💡 Current node: $current_node"
+        print_info "💡 Tip: Press Enter to use current node ($current_node)"
+        
+        while [[ -z "$TARGET_NODE" ]]; do
+            read -p "Select node number from the list above (default: current node): " node_num
+            
+            if [[ -z "$node_num" ]]; then
+                # Use current node as default
+                TARGET_NODE=$current_node
+                print_success "Using current node: $TARGET_NODE"
+            elif [[ "$node_num" =~ ^[0-9]+$ ]]; then
+                TARGET_NODE=$(sed -n "${node_num}p" /tmp/node_list.txt | awk '{print $2}')
+                if [[ -n "$TARGET_NODE" ]]; then
+                    print_success "Selected node: $TARGET_NODE"
+                else
+                    print_error "Invalid selection. Please choose a number from the list."
+                    TARGET_NODE=""
+                fi
+            else
+                print_error "Please enter a valid number or press Enter for current node."
+            fi
+        done
+    else
+        TARGET_NODE=$current_node
+        print_success "Single node detected: $TARGET_NODE"
+    fi
+    
+    rm -f /tmp/node_list.txt
     
     # Container IP
     DEFAULT_IP="192.168.1.100/24"
@@ -186,6 +251,7 @@ get_user_config() {
     
     print_success "Configuration completed"
     echo "Container ID: $CONTAINER_ID"
+    echo "Target Node: $TARGET_NODE"
     echo "Container IP: $CONTAINER_IP"
     echo "Gateway: $CONTAINER_GATEWAY"
     echo "Storage: $CONTAINER_STORAGE"
@@ -283,19 +349,34 @@ select_template() {
 create_container() {
     print_header "CREATING LXC CONTAINER"
     
-    print_info "Creating container with ID $CONTAINER_ID..."
+    print_info "Creating container with ID $CONTAINER_ID on node $TARGET_NODE..."
     
     # Create container command
-    create_cmd="pct create $CONTAINER_ID local:vztmpl/${TEMPLATE} \
-        --hostname $CONTAINER_NAME \
-        --memory $CONTAINER_MEMORY \
-        --rootfs $CONTAINER_STORAGE:$CONTAINER_DISK \
-        --cores $CONTAINER_CORES \
-        --net0 name=eth0,bridge=$CONTAINER_BRIDGE,ip=$CONTAINER_IP,gw=$CONTAINER_GATEWAY \
-        --onboot 1 \
-        --unprivileged 1 \
-        --features nesting=1 \
-        --password $CONTAINER_PASSWORD"
+    if [[ "$TARGET_NODE" == "$(hostname)" ]]; then
+        # Creating on current node
+        create_cmd="pct create $CONTAINER_ID local:vztmpl/${TEMPLATE} \
+            --hostname $CONTAINER_NAME \
+            --memory $CONTAINER_MEMORY \
+            --rootfs $CONTAINER_STORAGE:$CONTAINER_DISK \
+            --cores $CONTAINER_CORES \
+            --net0 name=eth0,bridge=$CONTAINER_BRIDGE,ip=$CONTAINER_IP,gw=$CONTAINER_GATEWAY \
+            --onboot 1 \
+            --unprivileged 1 \
+            --features nesting=1 \
+            --password $CONTAINER_PASSWORD"
+    else
+        # Creating on remote node
+        create_cmd="ssh root@$TARGET_NODE 'pct create $CONTAINER_ID local:vztmpl/${TEMPLATE} \
+            --hostname $CONTAINER_NAME \
+            --memory $CONTAINER_MEMORY \
+            --rootfs $CONTAINER_STORAGE:$CONTAINER_DISK \
+            --cores $CONTAINER_CORES \
+            --net0 name=eth0,bridge=$CONTAINER_BRIDGE,ip=$CONTAINER_IP,gw=$CONTAINER_GATEWAY \
+            --onboot 1 \
+            --unprivileged 1 \
+            --features nesting=1 \
+            --password $CONTAINER_PASSWORD'"
+    fi
     
     # Add SSH key if provided
     if [[ -n "$CONTAINER_SSH_KEY" ]]; then
@@ -307,7 +388,11 @@ create_container() {
     
     # Start container
     print_info "Starting container..."
-    pct start $CONTAINER_ID
+    if [[ "$TARGET_NODE" == "$(hostname)" ]]; then
+        pct start $CONTAINER_ID
+    else
+        ssh root@$TARGET_NODE "pct start $CONTAINER_ID"
+    fi
     sleep 10
     print_success "Container started"
 }
@@ -321,24 +406,24 @@ configure_container() {
         print_info "Detected Alpine Linux - configuring for Alpine..."
         
         print_info "Updating Alpine packages..."
-        pct exec $CONTAINER_ID -- apk update && pct exec $CONTAINER_ID -- apk upgrade
+        pct_exec apk update && pct_exec apk upgrade
         
         print_info "Installing required packages for Alpine..."
-        pct exec $CONTAINER_ID -- apk add curl wget sudo unzip bind-tools net-tools bash
+        pct_exec apk add curl wget sudo unzip bind-tools net-tools bash
         
         # Install systemd-compatible init for Pi-hole
-        pct exec $CONTAINER_ID -- apk add openrc
-        pct exec $CONTAINER_ID -- rc-update add local default
+        pct_exec apk add openrc
+        pct_exec rc-update add local default
         
         print_warning "Alpine detected: Pi-hole may require additional manual configuration"
     else
         print_info "Detected Debian/Ubuntu - using standard configuration..."
         
         print_info "Updating container packages..."
-        pct exec $CONTAINER_ID -- bash -c "apt update && apt upgrade -y"
+        pct_exec bash -c "apt update && apt upgrade -y"
         
         print_info "Installing required packages..."
-        pct exec $CONTAINER_ID -- bash -c "apt install -y curl wget sudo unzip dnsutils net-tools"
+        pct_exec bash -c "apt install -y curl wget sudo unzip dnsutils net-tools"
     fi
     
     print_success "Container base configuration completed"
@@ -349,7 +434,7 @@ install_unbound() {
     print_header "INSTALLING UNBOUND"
     
     print_info "Installing Unbound DNS resolver..."
-    pct exec $CONTAINER_ID -- bash -c "apt install -y unbound"
+    pct_exec bash -c "apt install -y unbound"
     
     print_info "Configuring Unbound..."
     
@@ -424,10 +509,10 @@ server:
 EOF
 
     # Copy configuration to container
-    pct push $CONTAINER_ID /tmp/unbound.conf /etc/unbound/unbound.conf.d/pi-hole.conf
+    pct_push /tmp/unbound.conf /etc/unbound/unbound.conf.d/pi-hole.conf
     
     # Start and enable Unbound
-    pct exec $CONTAINER_ID -- bash -c "systemctl enable unbound && systemctl start unbound"
+    pct_exec bash -c "systemctl enable unbound && systemctl start unbound"
     
     # Clean up
     rm /tmp/unbound.conf
@@ -461,10 +546,10 @@ WEBPASSWORD=$PIHOLE_WEBPASSWORD
 EOF
 
     # Copy configuration to container
-    pct push $CONTAINER_ID /tmp/setupVars.conf /etc/pihole/setupVars.conf
+    pct_push /tmp/setupVars.conf /etc/pihole/setupVars.conf
     
     print_info "Installing Pi-hole..."
-    pct exec $CONTAINER_ID -- bash -c "curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended"
+    pct_exec bash -c "curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended"
     
     # Clean up
     rm /tmp/setupVars.conf
@@ -478,7 +563,7 @@ configure_firewall() {
     
     print_info "Installing and configuring UFW firewall..."
     
-    pct exec $CONTAINER_ID -- bash -c "
+    pct_exec bash -c "
         apt install -y ufw
         ufw --force enable
         ufw default deny incoming
@@ -501,14 +586,14 @@ finalize_setup() {
     print_info "Testing DNS resolution..."
     
     # Test Unbound
-    if pct exec $CONTAINER_ID -- bash -c "dig @127.0.0.1 -p 5335 google.com +short" > /dev/null 2>&1; then
+    if pct_exec bash -c "dig @127.0.0.1 -p 5335 google.com +short" > /dev/null 2>&1; then
         print_success "Unbound DNS resolution test passed"
     else
         print_warning "Unbound DNS resolution test failed"
     fi
     
     # Test Pi-hole
-    if pct exec $CONTAINER_ID -- bash -c "dig @127.0.0.1 google.com +short" > /dev/null 2>&1; then
+    if pct_exec bash -c "dig @127.0.0.1 google.com +short" > /dev/null 2>&1; then
         print_success "Pi-hole DNS resolution test passed"
     else
         print_warning "Pi-hole DNS resolution test failed"
@@ -525,8 +610,8 @@ echo "DNS Test: $(dig @127.0.0.1 google.com +short | head -1)"
 echo "Web Interface: http://$(hostname -I | awk '{print $1}')/admin"
 EOF
     
-    pct push $CONTAINER_ID /tmp/pihole-status.sh /usr/local/bin/pihole-status.sh
-    pct exec $CONTAINER_ID -- bash -c "chmod +x /usr/local/bin/pihole-status.sh"
+    pct_push /tmp/pihole-status.sh /usr/local/bin/pihole-status.sh
+    pct_exec bash -c "chmod +x /usr/local/bin/pihole-status.sh"
     
     rm /tmp/pihole-status.sh
     
