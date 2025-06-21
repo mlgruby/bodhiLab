@@ -82,7 +82,7 @@ Example output:
 1. **Download and prepare the script:**
    ```bash
    # Download the script
-   wget https://raw.githubusercontent.com/your-repo/bodhiLab/main/proxmox/pi-hole/pihole-unbound-lxc-setup.sh
+   wget https://raw.githubusercontent.com/mlgruby/bodhiLab/main/proxmox/pi-hole/pihole-unbound-lxc-setup.sh
    
    # Make it executable
    chmod +x pihole-unbound-lxc-setup.sh
