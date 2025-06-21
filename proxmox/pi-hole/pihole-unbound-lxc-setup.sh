@@ -237,7 +237,7 @@ get_user_config() {
     print_info "   • Gateway: $CONTAINER_GATEWAY"
     print_info "   • Template: Debian (auto-selected)"
     print_info "   • Storage: First available option"
-    print_info "   • Memory: ${CONTAINER_MEMORY}MB, Disk: ${CONTAINER_DISK}GB"
+    print_info "   • Memory: ${CONTAINER_MEMORY}MB, CPU: ${CONTAINER_CORES} cores, Disk: ${CONTAINER_DISK}GB"
     echo ""
     read -p "Use quick setup with defaults above? (Y/n): " quick_setup
     
@@ -283,6 +283,10 @@ get_user_config() {
         read -p "Enter memory allocation in MB (default: $CONTAINER_MEMORY): " input_memory
         CONTAINER_MEMORY=${input_memory:-$CONTAINER_MEMORY}
         
+        # CPU Cores
+        read -p "Enter number of CPU cores (default: $CONTAINER_CORES): " input_cores
+        CONTAINER_CORES=${input_cores:-$CONTAINER_CORES}
+        
         # Storage
         read -p "Enter disk size in GB (default: $CONTAINER_DISK): " input_disk
         CONTAINER_DISK=${input_disk:-$CONTAINER_DISK}
@@ -296,6 +300,7 @@ get_user_config() {
     echo "Base Container IP: $BASE_CONTAINER_IP"
     echo "Gateway: $CONTAINER_GATEWAY"
     echo "Memory: ${CONTAINER_MEMORY}MB"
+    echo "CPU Cores: $CONTAINER_CORES"
     echo "Disk: ${CONTAINER_DISK}GB"
     echo "Nodes to install: ${#SELECTED_NODES[@]}"
 }
