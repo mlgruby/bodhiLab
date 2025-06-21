@@ -134,7 +134,8 @@ select_target_nodes() {
     
     # Get available nodes
     print_info "Scanning Proxmox cluster for available nodes..."
-    pvecm nodes 2>/dev/null | grep -E "^[[:space:]]*[0-9]+" | awk '{printf "%d. %s (Status: %s)\n", NR, $2, $3}' | tee /tmp/node_list.txt
+    # Extract node names from pvecm nodes output - node name is in column 3
+    pvecm nodes 2>/dev/null | grep -E "^[[:space:]]*[0-9]+" | awk '{print NR ". " $3 " (Status: " $4 ")"}' | tee /tmp/node_list.txt
     
     local node_count=$(wc -l < /tmp/node_list.txt)
     local current_node=$(hostname)
